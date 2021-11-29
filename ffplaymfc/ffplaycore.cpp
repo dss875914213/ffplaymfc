@@ -93,13 +93,13 @@ typedef struct PacketQueue {
 #define SUBPICTURE_QUEUE_SIZE 4
 
 
-long  rint(double x)
-{
-	if(x >= 0.)
-		return (long)(x + 0.5);
-	else
-		return (long)(x - 0.5);
-}
+//long  rint(double x)
+//{
+//	if(x >= 0.)
+//		return (long)(x + 0.5);
+//	else
+//		return (long)(x - 0.5);
+//}
 
 typedef struct VideoPicture {
 	double pts;                                  ///< presentation time stamp for this picture
@@ -1687,15 +1687,15 @@ display:
 			av_diff = 0;
 			if (is->audio_st && is->video_st)
 				av_diff = get_audio_clock(is) - get_video_clock(is);
-			printf("%7.2f A-V:%7.3f fd=%4d aq=%5dKB vq=%5dKB sq=%5dB f=%"PRId64"/%"PRId64"   \r",
-				get_master_clock(is),
-				av_diff,
-				is->frame_drops_early + is->frame_drops_late,
-				aqsize / 1024,
-				vqsize / 1024,
-				sqsize,
-				is->video_st ? is->video_st->codec->pts_correction_num_faulty_dts : 0,
-				is->video_st ? is->video_st->codec->pts_correction_num_faulty_pts : 0);
+			//printf("%7.2f A-V:%7.3f fd=%4d aq=%5dKB vq=%5dKB sq=%5dB f=%"PRId64"/%"PRId64"   \r",
+			//	get_master_clock(is),
+			//	av_diff,
+			//	is->frame_drops_early + is->frame_drops_late,
+			//	aqsize / 1024,
+			//	vqsize / 1024,
+			//	sqsize,
+			//	is->video_st ? is->video_st->codec->pts_correction_num_faulty_dts : 0,
+			//	is->video_st ? is->video_st->codec->pts_correction_num_faulty_pts : 0);
 			//输出时间信息（时间轴）-----------------
 			int pos=1000*get_master_clock(is)/(is->ic->duration/1000000);
 			dlg->m_playprogress.SetPos(pos);
