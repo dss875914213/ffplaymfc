@@ -1,50 +1,9 @@
-/* 
- * FFplay for MFC
- *
- * 雷霄骅 Lei Xiaohua
- * leixiaohua1020@126.com
- * 中国传媒大学/数字电视技术
- * Communication University of China / Digital TV Technology
- *
- * http://blog.csdn.net/leixiaohua1020
- * 
- * 本工程将ffmpeg项目中的ffplay播放器（ffplay.c）移植到了VC的环境下。
- * 并且使用MFC做了一套简单的界面。
- * This software transplant ffplay to Microsoft VC++ environment. 
- * And use MFC to build a simple Graphical User Interface. 
- */
-
 #include "stdafx.h"
 #include "ffplaymfc.h"
 #include "ffplaymfcDlg.h"
 #include "afxdialogex.h"
-
 #include "ffplaycore.h"
 
-#ifdef _DEBUG
-#define new DEBUG_NEW
-#endif
-
-
-// 用于应用程序“关于”菜单项的 CAboutDlg 对话框
-
-class CAboutDlg : public CDialogEx
-{
-public:
-	CAboutDlg();
-
-// 对话框数据
-	enum { IDD = IDD_ABOUTBOX };
-
-	protected:
-	virtual void DoDataExchange(CDataExchange* pDX);    // DDX/DDV 支持
-	virtual BOOL OnInitDialog();
-// 实现
-protected:
-	DECLARE_MESSAGE_MAP()
-public:
-	CEdit m_editconfig;
-};
 
 CAboutDlg::CAboutDlg() : CDialogEx(CAboutDlg::IDD)
 {
@@ -76,10 +35,6 @@ END_MESSAGE_MAP()
 
 
 // CffplaymfcDlg 对话框
-
-
-
-
 CffplaymfcDlg::CffplaymfcDlg(CWnd* pParent /*=NULL*/)
 	: CDialogEx(CffplaymfcDlg::IDD, pParent)
 {
@@ -185,7 +140,6 @@ BOOL CffplaymfcDlg::OnInitDialog()
 			pSysMenu->AppendMenu(MF_STRING, IDM_ABOUTBOX, strAboutMenu);
 		}
 	}
-
 
 	//_CrtSetBreakAlloc(4985);
 	// 设置此对话框的图标。当应用程序主窗口不是对话框时，框架将自动
@@ -602,7 +556,6 @@ void CffplaymfcDlg::OnLangEn()
 	CDialogEx::OnCancel();
 }
 
-
 void CffplaymfcDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 {
 	//调整播放进度条
@@ -613,14 +566,10 @@ void CffplaymfcDlg::OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar)
 	CDialogEx::OnHScroll(nSBCode, nPos, pScrollBar);
 }
 
-
 void CffplaymfcDlg::OnWebsite()
 {
 	ShellExecuteA( NULL,"open","http://blog.csdn.net/leixiaohua1020",NULL,NULL,SW_SHOWNORMAL);
 }
-
-
-
 
 void CffplaymfcDlg::OnIdcancel()
 {
@@ -635,12 +584,10 @@ void CffplaymfcDlg::OnIdcancel()
 	}
 }
 
-
 void CffplaymfcDlg::OnWindowstretchKeepratio()
 {
 	ffmfc_stretch(0);
 }
-
 
 void CffplaymfcDlg::OnWindowstretchResize()
 {
