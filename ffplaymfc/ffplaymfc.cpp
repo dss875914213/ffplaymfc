@@ -45,12 +45,9 @@ CffplaymfcApp::CffplaymfcApp()
 
 
 // 唯一的一个 CffplaymfcApp 对象
-
 CffplaymfcApp theApp;
 
-
-// CffplaymfcApp 初始化
-
+// 入口函数
 BOOL CffplaymfcApp::InitInstance()
 {
 	// 如果一个运行在 Windows XP 上的应用程序清单指定要
@@ -64,8 +61,6 @@ BOOL CffplaymfcApp::InitInstance()
 	InitCommonControlsEx(&InitCtrls);
 
 	CWinApp::InitInstance();
-
-
 	AfxEnableControlContainer();
 
 	// 创建 shell 管理器，以防对话框包含
@@ -132,7 +127,6 @@ void CffplaymfcApp::LoadLaguage()
 		}else if(strcmp(conf_val,"English")==0){
 			SetThreadUILanguage(MAKELCID(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), SORT_DEFAULT));
 		}
-
 	}
 
 	return;
