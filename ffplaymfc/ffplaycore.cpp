@@ -244,7 +244,6 @@ int ffmfc_param_aframe(VideoState *is,AVFrame *pFrame,AVPacket *packet){
 	return 0;
 }
 
-static int packet_queue_put(PacketQueue *q, AVPacket *pkt);
 //往队列里添加Packet(两层)?
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
 {
@@ -380,35 +379,6 @@ static inline void fill_rectangle(SDL_Surface *screen,
 	rect.h = h;
 	SDL_FillRect(screen, &rect, color);
 }
-
-#define ALPHA_BLEND(a, oldp, newp, s)\
-	((((oldp << s) * (255 - (a))) + (newp * (a))) / (255 << s))
-
-#define RGBA_IN(r, g, b, a, s)\
-{\
-	unsigned int v = ((const uint32_t *)(s))[0];\
-	a = (v >> 24) & 0xff;\
-	r = (v >> 16) & 0xff;\
-	g = (v >> 8) & 0xff;\
-	b = v & 0xff;\
-}
-
-#define YUVA_IN(y, u, v, a, s, pal)\
-{\
-	unsigned int val = ((const uint32_t *)(pal))[*(const uint8_t*)(s)];\
-	a = (val >> 24) & 0xff;\
-	y = (val >> 16) & 0xff;\
-	u = (val >> 8) & 0xff;\
-	v = val & 0xff;\
-}
-
-#define YUVA_OUT(d, y, u, v, a)\
-{\
-	((uint32_t *)(d))[0] = (a << 24) | (y << 16) | (u << 8) | v;\
-}
-
-
-#define BPP 1
 
 static void blend_subrect(AVPicture *dst, const AVSubtitleRect *rect, int imgw, int imgh)
 {
@@ -3178,25 +3148,49 @@ static int opt_codec(void *o, const char *opt, const char *arg)
 	return 0;
 }
 
-static int dummy;
+static void show_usage(void)
+{
+	av_log(NULL, AV_LOG_INFO, "Simple media player\n");
+	av_log(NULL, AV_LOG_INFO, "usage: %s [options] input_file\n", program_name);
+	av_log(NULL, AV_LOG_INFO, "\n");
+}
+
+static int lockmgr(void **mtx, enum AVLockOp op)
+{
+	switch(op) {
+	case AV_LOCK_CREATE:
+		*mtx = SDL_CreateMutex();
+		if(!*mtx)
+			return 1;
+		return 0;
+	case AV_LOCK_OBTAIN:
+		return !!SDL_LockMutex((SDL_mutex *)*mtx);
+	case AV_LOCK_RELEASE:
+		return !!SDL_UnlockMutex((SDL_mutex *)*mtx);
+	case AV_LOCK_DESTROY:
+		SDL_DestroyMutex((SDL_mutex *)*mtx);
+		return 0;
+	}
+	return 1;
+}
 
 static const OptionDef options[] = {
 #include "cmdutils_common_opts.h"
-	{ "x", HAS_ARG, { (void*) opt_width }, "force displayed width", "width" },
-	{ "y", HAS_ARG, { (void*) opt_height }, "force displayed height", "height" },
-	{ "s", HAS_ARG | OPT_VIDEO, { (void*) opt_frame_size }, "set frame size (WxH or abbreviation)", "size" },
+	{ "x", HAS_ARG, { (void*)opt_width }, "force displayed width", "width" },
+	{ "y", HAS_ARG, { (void*)opt_height }, "force displayed height", "height" },
+	{ "s", HAS_ARG | OPT_VIDEO, { (void*)opt_frame_size }, "set frame size (WxH or abbreviation)", "size" },
 	{ "fs", OPT_BOOL, { &is_full_screen }, "force full screen" },
 	{ "an", OPT_BOOL, { &audio_disable }, "disable audio" },
 	{ "vn", OPT_BOOL, { &video_disable }, "disable video" },
 	{ "ast", OPT_INT | HAS_ARG | OPT_EXPERT, { &wanted_stream[AVMEDIA_TYPE_AUDIO] }, "select desired audio stream", "stream_number" },
 	{ "vst", OPT_INT | HAS_ARG | OPT_EXPERT, { &wanted_stream[AVMEDIA_TYPE_VIDEO] }, "select desired video stream", "stream_number" },
 	{ "sst", OPT_INT | HAS_ARG | OPT_EXPERT, { &wanted_stream[AVMEDIA_TYPE_SUBTITLE] }, "select desired subtitle stream", "stream_number" },
-	{ "ss", HAS_ARG, { (void*) opt_seek }, "seek to a given position in seconds", "pos" },
-	{ "t", HAS_ARG, { (void*) opt_duration }, "play  \"duration\" seconds of audio/video", "duration" },
+	{ "ss", HAS_ARG, { (void*)opt_seek }, "seek to a given position in seconds", "pos" },
+	{ "t", HAS_ARG, { (void*)opt_duration }, "play  \"duration\" seconds of audio/video", "duration" },
 	{ "bytes", OPT_INT | HAS_ARG, { &seek_by_bytes }, "seek by bytes 0=off 1=on -1=auto", "val" },
 	{ "nodisp", OPT_BOOL, { &display_disable }, "disable graphical display" },
-	{ "f", HAS_ARG, { (void*) opt_format }, "force format", "fmt" },
-	{ "pix_fmt", HAS_ARG | OPT_EXPERT | OPT_VIDEO, { (void*) opt_frame_pix_fmt }, "set pixel format", "format" },
+	{ "f", HAS_ARG, { (void*)opt_format }, "force format", "fmt" },
+	{ "pix_fmt", HAS_ARG | OPT_EXPERT | OPT_VIDEO, { (void*)opt_frame_pix_fmt }, "set pixel format", "format" },
 	{ "stats", OPT_BOOL | OPT_EXPERT, { &show_status }, "show status", "" },
 	{ "bug", OPT_INT | HAS_ARG | OPT_EXPERT, { &workaround_bugs }, "workaround bugs", "" },
 	{ "fast", OPT_BOOL | OPT_EXPERT, { &fast }, "non spec compliant optimizations", "" },
@@ -3208,7 +3202,7 @@ static const OptionDef options[] = {
 	{ "skipidct", OPT_INT | HAS_ARG | OPT_EXPERT, { &skip_idct }, "", "" },
 	{ "idct", OPT_INT | HAS_ARG | OPT_EXPERT, { &idct }, "set idct algo",  "algo" },
 	{ "ec", OPT_INT | HAS_ARG | OPT_EXPERT, { &error_concealment }, "set error concealment options",  "bit_mask" },
-	{ "sync", HAS_ARG | OPT_EXPERT, { (void*) opt_sync }, "set audio-video sync. type (type=audio/video/ext)", "type" },
+	{ "sync", HAS_ARG | OPT_EXPERT, { (void*)opt_sync }, "set audio-video sync. type (type=audio/video/ext)", "type" },
 	{ "autoexit", OPT_BOOL | OPT_EXPERT, { &autoexit }, "exit at the end", "" },
 	{ "exitonkeydown", OPT_BOOL | OPT_EXPERT, { &exit_on_keydown }, "exit on key down", "" },
 	{ "exitonmousedown", OPT_BOOL | OPT_EXPERT, { &exit_on_mousedown }, "exit on mouse down", "" },
@@ -3219,22 +3213,15 @@ static const OptionDef options[] = {
 #if CONFIG_AVFILTER
 	{ "vf", OPT_STRING | HAS_ARG, { &vfilters }, "video filters", "filter list" },
 #endif
-	{ "rdftspeed", OPT_INT | HAS_ARG| OPT_AUDIO | OPT_EXPERT, { &rdftspeed }, "rdft speed", "msecs" },
-	{ "showmode", HAS_ARG, { (void*) opt_show_mode}, "select show mode (0 = video, 1 = waves, 2 = RDFT)", "mode" },
+	{ "rdftspeed", OPT_INT | HAS_ARG | OPT_AUDIO | OPT_EXPERT, { &rdftspeed }, "rdft speed", "msecs" },
+	{ "showmode", HAS_ARG, { (void*)opt_show_mode}, "select show mode (0 = video, 1 = waves, 2 = RDFT)", "mode" },
 	{ "default", HAS_ARG | OPT_AUDIO | OPT_VIDEO | OPT_EXPERT, { (void*)opt_default }, "generic catch all option", "" },
 	{ "i", OPT_BOOL, { &dummy}, "read specified file", "input_file"},
-	{ "codec", HAS_ARG, { (void*) opt_codec}, "force decoder", "decoder" },
+	{ "codec", HAS_ARG, { (void*)opt_codec}, "force decoder", "decoder" },
 	{ NULL, },
 };
 
-static void show_usage(void)
-{
-	av_log(NULL, AV_LOG_INFO, "Simple media player\n");
-	av_log(NULL, AV_LOG_INFO, "usage: %s [options] input_file\n", program_name);
-	av_log(NULL, AV_LOG_INFO, "\n");
-}
-
-void show_help_default(const char *opt, const char *arg)
+void show_help_default(const char* opt, const char* arg)
 {
 	av_log_set_callback(log_callback_help);
 	show_usage();
@@ -3261,37 +3248,18 @@ void show_help_default(const char *opt, const char *arg)
 		"down/up             seek backward/forward 1 minute\n"
 		"page down/page up   seek backward/forward 10 minutes\n"
 		"mouse click         seek to percentage in file corresponding to fraction of width\n"
-		);
-}
-
-static int lockmgr(void **mtx, enum AVLockOp op)
-{
-	switch(op) {
-	case AV_LOCK_CREATE:
-		*mtx = SDL_CreateMutex();
-		if(!*mtx)
-			return 1;
-		return 0;
-	case AV_LOCK_OBTAIN:
-		return !!SDL_LockMutex((SDL_mutex *)*mtx);
-	case AV_LOCK_RELEASE:
-		return !!SDL_UnlockMutex((SDL_mutex *)*mtx);
-	case AV_LOCK_DESTROY:
-		SDL_DestroyMutex((SDL_mutex *)*mtx);
-		return 0;
-	}
-	return 1;
+	);
 }
 
 //解码主函数
 #define __MINGW32__
 int ffmfc_play(LPVOID lpParam)
 {
-	dlg=(CffplaymfcDlg *)lpParam;
+	dlg = (CffplaymfcDlg*)lpParam;
 	ffmfc_reset_index();
-	m_exit=false;
+	m_exit = false;
 	int flags;
-	VideoState *is; //核心结构
+	VideoState* is; //核心结构
 	char dummy_videodriver[] = "SDL_VIDEODRIVER=dummy";
 	avcodec_register_all();
 #if CONFIG_AVDEVICE
@@ -3302,17 +3270,17 @@ int ffmfc_play(LPVOID lpParam)
 #endif
 	av_register_all();
 	avformat_network_init();
-	signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).    */
+	signal(SIGINT, sigterm_handler); /* Interrupt (ANSI).    */
 	signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
-	input_filename=(const char *)malloc(MAX_URL_LENGTH);
+	input_filename = (const char*)malloc(MAX_URL_LENGTH);
 
-	GetWindowTextA(dlg->m_inputurl,(LPSTR)input_filename,MAX_URL_LENGTH);
-	
-	int opt_argc=0; //获取播放的首选项
-	char **opt_argv=NULL;
+	GetWindowTextA(dlg->m_inputurl, (LPSTR)input_filename, MAX_URL_LENGTH);
+
+	int opt_argc = 0; //获取播放的首选项
+	char** opt_argv = NULL;
 
 	parse_options(NULL, opt_argc, opt_argv, options, opt_input_file);
-	if (display_disable) 
+	if (display_disable)
 	{
 		video_disable = 1;
 	}
@@ -3323,23 +3291,23 @@ int ffmfc_play(LPVOID lpParam)
 	if (display_disable)
 		SDL_putenv(dummy_videodriver); /* For the event queue, we always need a video driver. */
 #else
-	char sdl_var[128]; 
+	char sdl_var[128];
 	//sprintf(sdl_var, "SDL_WINDOWID=0x%lx", hWnd );//主窗口句柄 
-	SDL_putenv(sdl_var); 
-	char *myvalue = SDL_getenv("SDL_WINDOWID");
+	SDL_putenv(sdl_var);
+	char* myvalue = SDL_getenv("SDL_WINDOWID");
 #endif
 
 #if !defined(__MINGW32__) && !defined(__APPLE__)
 	flags |= SDL_INIT_EVENTTHREAD; /* Not supported on Windows or Mac OS X */
 #endif
-	if (SDL_Init (flags)) {
+	if (SDL_Init(flags)) {
 		AfxMessageBox(_T("Could not initialize SDL "));
 		exit(1);
 	}
 
 	if (!display_disable) {
 #if HAVE_SDL_VIDEO_SIZE
-		const SDL_VideoInfo *vi = SDL_GetVideoInfo();
+		const SDL_VideoInfo* vi = SDL_GetVideoInfo();
 		fs_screen_width = vi->current_w;
 		fs_screen_height = vi->current_h;
 #endif
@@ -3363,7 +3331,7 @@ int ffmfc_play(LPVOID lpParam)
 	}
 
 	g_is = is;
-	autoexit=1;
+	autoexit = 1;
 	event_loop(is);
 	return 0;
 }
