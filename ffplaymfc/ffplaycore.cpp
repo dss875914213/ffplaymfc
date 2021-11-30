@@ -1,340 +1,24 @@
-/* 
- * FFplay for MFC
- *
- * 雷霄骅 Lei Xiaohua
- * leixiaohua1020@126.com
- * 中国传媒大学/数字电视技术
- * Communication University of China / Digital TV Technology
- *
- * http://blog.csdn.net/leixiaohua1020
- * 
- * 本工程将ffmpeg项目中的ffplay播放器（ffplay.c）移植到了VC的环境下。
- * 并且使用MFC做了一套简单的界面。
- * This software transplant ffplay to Microsoft VC++ environment. 
- * And use MFC to build a simple Graphical User Interface. 
- */
-
 #include "stdafx.h"
-
 #include "ffplaycore.h"
+
 const char program_name[] = "ffplaymfc";
 const int program_birth_year = 2013;
 
-
-
-#define MAX_QUEUE_SIZE (15 * 1024 * 1024)
-#define MIN_FRAMES 5
-
-/* SDL audio buffer size, in samples. Should be small to have precise
-A/V sync as SDL does not have hardware buffer fullness info. */
-#define SDL_AUDIO_BUFFER_SIZE 1024
-
-/* no AV sync correction is done if below the AV sync threshold */
-#define AV_SYNC_THRESHOLD 0.01
-/* no AV correction is done if too big error */
-#define AV_NOSYNC_THRESHOLD 10.0
-
-/* maximum audio speed change to get correct sync */
-#define SAMPLE_CORRECTION_PERCENT_MAX 10
-
-/* we use about AUDIO_DIFF_AVG_NB A-V differences to make the average */
-#define AUDIO_DIFF_AVG_NB   20
-
-/* NOTE: the size must be big enough to compensate the hardware audio buffersize size */
-/* TODO: We assume that a decoded and resampled frame fits into this buffer */
-#define SAMPLE_ARRAY_SIZE (8 * 65536)
-
-#define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000 // 1 second of 48khz 32bit audio
-
-static int sws_flags = SWS_BICUBIC;
-
-//读取输入文件协议的时候使用；来自ffmpeg源码
-typedef struct URLContext {
-	const AVClass *av_class; ///< information for av_log(). Set by url_open().
-	struct URLProtocol *prot;
-	int flags;
-	int is_streamed;  /**< true if streamed (no seek possible), default = false */
-	int max_packet_size;  /**< if non zero, the stream is packetized with this max packet size */
-	void *priv_data;
-	char *filename; /**< specified URL */
-	int is_connected;
-	AVIOInterruptCB interrupt_callback;
-} URLContext;
-typedef struct URLProtocol {
-	const char *name;
-	int (*url_open)(URLContext *h, const char *url, int flags);
-	int (*url_read)(URLContext *h, unsigned char *buf, int size);
-	int (*url_write)(URLContext *h, const unsigned char *buf, int size);
-	int64_t (*url_seek)(URLContext *h, int64_t pos, int whence);
-	int (*url_close)(URLContext *h);
-	struct URLProtocol *next;
-	int (*url_read_pause)(URLContext *h, int pause);
-	int64_t (*url_read_seek)(URLContext *h, int stream_index,
-		int64_t timestamp, int flags);
-	int (*url_get_file_handle)(URLContext *h);
-	int priv_data_size;
-	const AVClass *priv_data_class;
-	int flags;
-	int (*url_check)(URLContext *h, int mask);
-} URLProtocol;
-//---------------------
-
-
-typedef struct PacketQueue {
-	AVPacketList *first_pkt, *last_pkt;
-	int nb_packets;
-	int size;
-	int abort_request;
-	SDL_mutex *mutex;
-	SDL_cond *cond;
-} PacketQueue;
-
-#define VIDEO_PICTURE_QUEUE_SIZE 4
-#define SUBPICTURE_QUEUE_SIZE 4
-
-
-//long  rint(double x)
-//{
-//	if(x >= 0.)
-//		return (long)(x + 0.5);
-//	else
-//		return (long)(x - 0.5);
-//}
-
-typedef struct VideoPicture {
-	double pts;                                  ///< presentation time stamp for this picture
-	int64_t pos;                                 ///< byte position in file
-	int skip;
-	SDL_Overlay *bmp;
-	int width, height; /* source height & width */
-	AVRational sample_aspect_ratio;
-	int allocated;
-	int reallocate;
-
-#if CONFIG_AVFILTER
-	AVFilterBufferRef *picref;
-#endif
-} VideoPicture;
-
-typedef struct SubPicture {
-	double pts; /* presentation time stamp for this picture */
-	AVSubtitle sub;
-} SubPicture;
-
-typedef struct AudioParams {
-	int freq;
-	int channels;
-	int channel_layout;
-	enum AVSampleFormat fmt;
-} AudioParams;
-
-enum {
-	AV_SYNC_AUDIO_MASTER, /* default choice */
-	AV_SYNC_VIDEO_MASTER,
-	AV_SYNC_EXTERNAL_CLOCK, /* synchronize to an external clock */
-};
-//视频显示方式
-enum V_Show_Mode {
-	SHOW_MODE_YUV = 0, SHOW_MODE_Y, SHOW_MODE_U, SHOW_MODE_V
-};
-
-typedef struct VideoState {
-	SDL_Thread *read_tid;
-	SDL_Thread *video_tid;
-	SDL_Thread *refresh_tid;
-	AVInputFormat *iformat;
-	int no_background;
-	int abort_request;
-	int force_refresh;
-	int paused;
-	int last_paused;
-	int que_attachments_req;
-	int seek_req;
-	int seek_flags;
-	int64_t seek_pos;
-	int64_t seek_rel;
-	int read_pause_return;
-	AVFormatContext *ic;
-
-	int audio_stream;
-
-	int av_sync_type;
-	double external_clock; /* external clock base */
-	int64_t external_clock_time;
-
-	double audio_clock;
-	double audio_diff_cum; /* used for AV difference average computation */
-	double audio_diff_avg_coef;
-	double audio_diff_threshold;
-	int audio_diff_avg_count;
-	AVStream *audio_st;
-	PacketQueue audioq;
-	int audio_hw_buf_size;
-	DECLARE_ALIGNED(16,uint8_t,audio_buf2)[AVCODEC_MAX_AUDIO_FRAME_SIZE * 4];
-	uint8_t silence_buf[SDL_AUDIO_BUFFER_SIZE];
-	uint8_t *audio_buf;
-	uint8_t *audio_buf1;
-	unsigned int audio_buf_size; /* in bytes */
-	int audio_buf_index; /* in bytes */
-	int audio_write_buf_size;
-	AVPacket audio_pkt_temp;
-	AVPacket audio_pkt;
-	struct AudioParams audio_src;
-	struct AudioParams audio_tgt;
-	struct SwrContext *swr_ctx;
-	double audio_current_pts;
-	double audio_current_pts_drift;
-	int frame_drops_early;
-	int frame_drops_late;
-	AVFrame *frame;
-
-	enum ShowMode {
-		SHOW_MODE_NONE = -1, SHOW_MODE_VIDEO = 0, SHOW_MODE_WAVES, SHOW_MODE_RDFT, SHOW_MODE_NB
-	} show_mode;
-	int16_t sample_array[SAMPLE_ARRAY_SIZE];
-	int sample_array_index;
-	int last_i_start;
-	RDFTContext *rdft;
-	int rdft_bits;
-	FFTSample *rdft_data;
-	int xpos;
-
-	SDL_Thread *subtitle_tid;
-	int subtitle_stream;
-	int subtitle_stream_changed;
-	AVStream *subtitle_st;
-	PacketQueue subtitleq;
-	SubPicture subpq[SUBPICTURE_QUEUE_SIZE];
-	int subpq_size, subpq_rindex, subpq_windex;
-	SDL_mutex *subpq_mutex;
-	SDL_cond *subpq_cond;
-
-	double frame_timer;
-	double frame_last_pts;
-	double frame_last_duration;
-	double frame_last_dropped_pts;
-	double frame_last_returned_time;
-	double frame_last_filter_delay;
-	int64_t frame_last_dropped_pos;
-	double video_clock;                          ///< pts of last decoded frame / predicted pts of next decoded frame
-	int video_stream;
-	AVStream *video_st;
-	PacketQueue videoq;
-	double video_current_pts;                    ///< current displayed pts (different from video_clock if frame fifos are used)
-	double video_current_pts_drift;              ///< video_current_pts - time (av_gettime) at which we updated video_current_pts - used to have running video pts
-	int64_t video_current_pos;                   ///< current displayed file pos
-	VideoPicture pictq[VIDEO_PICTURE_QUEUE_SIZE];
-	int pictq_size, pictq_rindex, pictq_windex;
-	SDL_mutex *pictq_mutex;
-	SDL_cond *pictq_cond;
-#if !CONFIG_AVFILTER
-	struct SwsContext *img_convert_ctx;
-#endif
-
-	char filename[1024];
-	int width, height, xleft, ytop;
-	int step;
-
-#if CONFIG_AVFILTER
-	AVFilterContext *in_video_filter;           ///< the first filter in the video chain
-	AVFilterContext *out_video_filter;          ///< the last filter in the video chain
-	int use_dr1;
-	FrameBuffer *buffer_pool;
-#endif
-
-	int refresh;
-	int last_video_stream, last_audio_stream, last_subtitle_stream;
-
-	SDL_cond *continue_read_thread;
-	//视频显示方式------------
-	enum V_Show_Mode v_show_mode;
-} VideoState;
-
 VideoState *g_is = NULL;
-
-enum ShowMode {
-	SHOW_MODE_NONE = -1, SHOW_MODE_VIDEO = 0, SHOW_MODE_WAVES, SHOW_MODE_RDFT, SHOW_MODE_NB
-} ;
-//指向MFC窗口的指针
-CffplaymfcDlg * dlg;
+CffplaymfcDlg * dlg; //指向MFC窗口的指针
 
 /* options specified by the user */
-static AVInputFormat *file_iformat;
-static const char *input_filename;
-
-static const char *window_title;
-static int fs_screen_width;
-static int fs_screen_height;
-static int screen_width  = 0;
-static int screen_height = 0;
-static int audio_disable ;
-static int video_disable ;
-static int wanted_stream[AVMEDIA_TYPE_NB] = {-1,-1,0,-1,0};
-//   [AVMEDIA_TYPE_AUDIO]    = -1,
-//   [AVMEDIA_TYPE_VIDEO]    = -1,
-//   [AVMEDIA_TYPE_SUBTITLE] = -1,};
-static int seek_by_bytes = -1;
-static int display_disable;
-static int show_status = 1;
-static int av_sync_type = AV_SYNC_AUDIO_MASTER;
-static int64_t start_time = AV_NOPTS_VALUE;
-static int64_t duration = AV_NOPTS_VALUE;
-static int workaround_bugs = 1;
-static int fast = 0;
-static int genpts = 0;
-static int lowres = 0;
-static int idct = FF_IDCT_AUTO;
-static enum AVDiscard skip_frame       = AVDISCARD_DEFAULT;
-static enum AVDiscard skip_idct        = AVDISCARD_DEFAULT;
-static enum AVDiscard skip_loop_filter = AVDISCARD_DEFAULT;
-static int error_concealment = 3;
-static int decoder_reorder_pts = -1;
-static int autoexit;
-static int exit_on_keydown;
-static int exit_on_mousedown;
-static int loop = 1;
-static int framedrop = -1;
-static int infinite_buffer = -1;
-static enum ShowMode show_mode = SHOW_MODE_NONE;
-static const char *audio_codec_name;
-static const char *subtitle_codec_name;
-static const char *video_codec_name;
-static int rdftspeed = 20;
 #if CONFIG_AVFILTER
 static char *vfilters = NULL;
 #endif
 
 /* current context */
-static int is_full_screen;
-static int64_t audio_callback_time;
-
-static AVPacket flush_pkt;
-
-
-#define FF_ALLOC_EVENT   (SDL_USEREVENT)
-#define FF_REFRESH_EVENT (SDL_USEREVENT + 1)
-#define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
-
-//自定义一个事件，用于调整播放进度
-#define FFMFC_SEEK_BAR_EVENT    (SDL_USEREVENT + 4)
 int seek_bar_pos;
-//专门设置的标记，在程序将要退出的时候会置1
-static int exit_remark=0;
-
-//是否拉伸-------------------------
-#define FFMFC_STRETCH_EVENT (SDL_USEREVENT + 5)
-int is_stretch=1;
-//---------------------------------
-static SDL_Surface *screen;
-
-//视频帧索引
-int vframe_index=0;
-//音频帧索引
-int aframe_index=0;
-//Packet索引
-int packet_index=0;
+int is_stretch=1; 
+int vframe_index=0;//视频帧索引
+int aframe_index=0;//音频帧索引
+int packet_index=0;// Packet 索引
 //复位
-//Reset
 int ffmfc_reset_index(){
 	vframe_index=0;
 	aframe_index=0;
@@ -357,12 +41,9 @@ int ffmfc_param_global(VideoState *is){
 	AVCodecContext *pCodecCtx_au = pFormatCtx->streams[audio_stream]->codec;
 
 	USES_CONVERSION;
-
 	if(pFormatCtx->pb!=NULL){
 		URLContext *uc=(URLContext *)pFormatCtx->pb->opaque;
 		URLProtocol *up=(URLProtocol *)uc->prot;
-		//输入文件的协议----------
-
 
 #ifdef _UNICODE
 		input_protocol.Format(_T("%s"),A2W(up->name));
@@ -371,8 +52,6 @@ int ffmfc_param_global(VideoState *is){
 #endif
 		dlg->m_formatprotocol.SetWindowText(input_protocol);
 	}
-
-
 	//视频解码参数，有视频的时候设置
 	if(video_stream!=-1){
 		wxh.Format(_T("%d x %d"),pCodecCtx->width,pCodecCtx->height);
@@ -383,8 +62,6 @@ int ffmfc_param_global(VideoState *is){
 #else
 		decoder_name.Format(_T("%s"),pCodecCtx->codec->long_name);
 #endif
-
-		
 		dlg->m_codecvname.SetWindowText(decoder_name);
 		//帧率显示还有问题
 		framerate_temp=(pFormatCtx->streams[video_stream]->r_frame_rate.num)/(pFormatCtx->streams[video_stream]->r_frame_rate.den);
@@ -445,26 +122,8 @@ int ffmfc_param_global(VideoState *is){
 #endif
 
 	dlg->m_formatinputformat.SetWindowText(input_format);
-	//------------------------
-
-
-	//bitrate.Format("%d",pCodecCtx->bit_rate);
-	//dlg->m_bitrate.SetWindowText(bitrate);
-
-	//MetaData------------------------------------------------------------
-	//从AVDictionary获得
-	//需要用到AVDictionaryEntry对象
-	//CString author,copyright,description;
 	CString meta=NULL,key,value;
 	AVDictionaryEntry *m = NULL;
-	//不用一个一个找出来
-	/*	m=av_dict_get(pFormatCtx->metadata,"author",m,0);
-	author.Format("作者：%s",m->value);
-	m=av_dict_get(pFormatCtx->metadata,"copyright",m,0);
-	copyright.Format("版权：%s",m->value);
-	m=av_dict_get(pFormatCtx->metadata,"description",m,0);
-	description.Format("描述：%s",m->value);
-	*/
 	//使用循环读出
 	//(需要读取的数据，字段名称，前一条字段（循环时使用），参数)
 	while(m=av_dict_get(pFormatCtx->metadata,"",m,AV_DICT_IGNORE_SUFFIX)){
@@ -477,42 +136,18 @@ int ffmfc_param_global(VideoState *is){
 		value.Format(_T("%s"),m->value);
 		meta.AppendFormat(_T("%s\t:%s\r\n"),key,value);
 #endif
-
 	}
-
-	//EditControl换行用\n不行，需要使用\r\n
-	//除了要用\r\n外，还要都CEdit 的属性进行设置：
-	//Auto HScroll 设置为 False
-	//MultiLine  设置为 True
-
-	//dlg->m_metadata.SetWindowText(author+"\r\n"+copyright+"\r\n"+description);
 	dlg->m_formatmetadata.SetWindowText(meta);
-	//--------------------------------------------------------------------
 	return 0;
 }
-//每一帧设置一次
-//有一些全局变量
 
+//每一帧设置一次 有一些全局变量
 int ffmfc_param_packet(VideoState *is,AVPacket *packet){
-	//--------------------------------------------------------------------
-	AVFormatContext *pFormatCtx = is->ic;
-	int video_stream=is->video_stream;
-	int audio_stream=is->audio_stream;
-	AVCodecContext *pCodecCtx = pFormatCtx->streams[video_stream]->codec;
-	int packet_size;
-	//避免数据太多，超过一定量之后，就会清零--------------------------
-	if(packet_index>=MAX_PACKET_NUM){
+	if(packet_index>=MAX_PACKET_NUM)//避免数据太多，超过一定量之后，就会清零
 		dlg->SystemClear();
-	}
-
-	//码流单元的大小，例如H.264中的NAL----------------------------------------------
-	packet_size=packet->size;
-
-	//自增-----------------------------------------------
 	packet_index++;
 	return 0;
 }
-
 
 //视频帧参数提取
 int ffmfc_param_vframe(VideoState *is,AVFrame *pFrame,AVPacket *packet){
@@ -523,26 +158,18 @@ int ffmfc_param_vframe(VideoState *is,AVFrame *pFrame,AVPacket *packet){
 	AVCodecContext *pCodecCtx = pFormatCtx->streams[video_stream]->codec;
 	
 	USES_CONVERSION;
-	//避免数据太多，超过一定量之后，就会清零--------------------------
 
-	if(vframe_index>=MAX_FRAME_NUM){
+	if(vframe_index>=MAX_FRAME_NUM)
 		dlg->SystemClear();
-	}
 
-	//------------------------------
 	f_index.Format(_T("%d"),vframe_index);
 	//获取当前记录条数
 	int nIndex=dlg->vddlg->m_videodecodelist.GetItemCount();
-	//“行”数据结构
 	LV_ITEM lvitem;
 	lvitem.mask=LVIF_TEXT;
 	lvitem.iItem=nIndex;
 	lvitem.iSubItem=0;
-	//注：vframe_index不可以直接赋值！
-	//务必使用f_index执行Format!再赋值！
-	lvitem.pszText=f_index.GetBuffer();
-	//------------------------
-
+	lvitem.pszText=f_index.GetBuffer();//注：vframe_index不可以直接赋值！ 务必使用f_index执行Format!再赋值！
 
 	switch(pFrame->key_frame){
 	case 0:
@@ -596,29 +223,19 @@ int ffmfc_param_aframe(VideoState *is,AVFrame *pFrame,AVPacket *packet){
 	AVFormatContext *pFormatCtx = is->ic;
 	int audio_stream=is->audio_stream;
 	AVCodecContext *pCodecCtx = pFormatCtx->streams[audio_stream]->codec;
-	//避免数据太多，超过一定量之后，就会清零--------------------------
-
-	if(aframe_index>=MAX_FRAME_NUM){
+	if(aframe_index>=MAX_FRAME_NUM)
 		dlg->SystemClear();
-	}
-	//------------------------------
+
 	CString f_index,packet_size,pts;
-	//---------------
 	f_index.Format(_T("%d"),aframe_index);
-	//获取当前记录条数
 	int nIndex=dlg->addlg->m_audiodecodelist.GetItemCount();
-	//“行”数据结构
 	LV_ITEM lvitem;
 	lvitem.mask=LVIF_TEXT;
 	lvitem.iItem=nIndex;
 	lvitem.iSubItem=0;
-	//注：frame_index不可以直接赋值！
-	//务必使用f_index执行Format!再赋值！
 	lvitem.pszText=f_index.GetBuffer();
-	//------------------------
 	packet_size.Format(_T("%d"),packet->size);
 	pts.Format(_T("%d"),packet->pts);
-	//---------------
 	dlg->addlg->m_audiodecodelist.InsertItem(&lvitem);
 	dlg->addlg->m_audiodecodelist.SetItemText(nIndex,1,packet_size);
 	dlg->addlg->m_audiodecodelist.SetItemText(nIndex,2,pts);
@@ -627,7 +244,6 @@ int ffmfc_param_aframe(VideoState *is,AVFrame *pFrame,AVPacket *packet){
 	return 0;
 }
 
-//--------------------------------------------------
 static int packet_queue_put(PacketQueue *q, AVPacket *pkt);
 //往队列里添加Packet(两层)?
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
@@ -645,15 +261,12 @@ static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
 	pkt1->next = NULL;
 
 	if (!q->last_pkt)
-		//第一个
 		q->first_pkt = pkt1;
 	else
-		//其他情况
 		q->last_pkt->next = pkt1;
 	q->last_pkt = pkt1;
 	q->nb_packets++;
 	q->size += pkt1->pkt.size + sizeof(*pkt1);
-	/* XXX: should duplicate packet data in DV case */
 	SDL_CondSignal(q->cond);
 	return 0;
 }
@@ -661,16 +274,12 @@ static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt)
 static int packet_queue_put(PacketQueue *q, AVPacket *pkt)
 {
 	int ret;
-
-	/* duplicate the packet */
 	if (pkt != &flush_pkt && av_dup_packet(pkt) < 0)
 		return -1;
-
 	SDL_LockMutex(q->mutex);
 	//往队列里添加Packet(两层)?
 	ret = packet_queue_put_private(q, pkt);
 	SDL_UnlockMutex(q->mutex);
-
 	if (pkt != &flush_pkt && ret < 0)
 		av_free_packet(pkt);
 
@@ -689,7 +298,6 @@ static void packet_queue_init(PacketQueue *q)
 static void packet_queue_flush(PacketQueue *q)
 {
 	AVPacketList *pkt, *pkt1;
-
 	SDL_LockMutex(q->mutex);
 	for (pkt = q->first_pkt; pkt != NULL; pkt = pkt1) {
 		pkt1 = pkt->next;
@@ -713,11 +321,8 @@ static void packet_queue_destroy(PacketQueue *q)
 static void packet_queue_abort(PacketQueue *q)
 {
 	SDL_LockMutex(q->mutex);
-
 	q->abort_request = 1;
-
 	SDL_CondSignal(q->cond);
-
 	SDL_UnlockMutex(q->mutex);
 }
 
@@ -1151,12 +756,8 @@ static void video_audio_display(VideoState *s)
 
 	bgcolor = SDL_MapRGB(screen->format, 0x00, 0x00, 0x00);
 	if (s->show_mode == SHOW_MODE_WAVES) {
-		fill_rectangle(screen,
-			s->xleft, s->ytop, s->width, s->height,
-			bgcolor);
-
+		fill_rectangle(screen, s->xleft, s->ytop, s->width, s->height, bgcolor);
 		fgcolor = SDL_MapRGB(screen->format, 0xff, 0xff, 0xff);
-
 		/* total height for one channel */
 		h = s->height / nb_display_channels;
 		/* graph height / 2 */
@@ -1274,13 +875,8 @@ static void stream_close(VideoState *is)
 //退出
 static void do_exit(VideoState *is)
 {
-	exit_remark=1;
+	m_exit=true;
 	if (is) {
-		//直接abort_request = 1并sleep是不负责任的方法
-		//这样程序会直接退出
-		//不能完成清理任务！
-		//is->abort_request = 1;
-		//Sleep(2000);
 		stream_close(is);
 	}
 	av_lockmgr_register(NULL);
@@ -1294,11 +890,6 @@ static void do_exit(VideoState *is)
 		printf("\n");
 	SDL_Quit();
 	av_log(NULL, AV_LOG_QUIET, "%s", "");
-
-	//不能直接使用exit(0)，否则整个程序会退出
-	//exit(0);
-	//改为一个标记，在event_loop中判断并自动退出
-	//exit_remark=1;
 }
 
 //发送“退出”命令
@@ -1312,9 +903,6 @@ void ffmfc_quit()
 		event.type = FF_QUIT_EVENT;
 		event.user.data1 = g_is;
 		{
-			//不能直接把is->abort_request设置为1；否则会从event_loop()循环中直接跳出
-			//从而无法进行清理操作
-			//g_is->abort_request = 1;
 			SDL_PushEvent(&event);
 		}
 	}
@@ -2378,9 +1966,6 @@ static int audio_decode_frame(VideoState *is, double *pts_ptr)
 			
 			//注意：此处设置MFC参数---
 			ffmfc_param_aframe(is,is->frame,pkt_temp);
-			//----------
-
-			//------------------------
 			pkt_temp->data += len1;
 			pkt_temp->size -= len1;
 
@@ -2827,28 +2412,7 @@ static int read_thread(void *arg)
 	ic = avformat_alloc_context();
 	ic->interrupt_callback.callback = decode_interrupt_cb;
 	ic->interrupt_callback.opaque = is;
-	// 打开视频文件（没有打开编解码器），初始化AVFormatContext
-	// 新版中已经将其废弃
-	//if(av_open_input_file(&pFormatCtx, filename, NULL, 0, NULL)!=0)
-	//{
-	//	printf("Couldn't open file.\n");
-	//	return -1;
-	//}
-	//改为avformat_open_input()
-	//--------------------------
-	//if(avformat_open_input(&pFormatCtx,filename,NULL,NULL)!=0){
-	//char rtspurl[100]="rtsp://169.254.197.35:8554/sh1943.mpg";
-	//为了使FFMPEG可以直接从内存中读取数据
-	//抓包的时候直接从内存中读取数据
-
 	err = avformat_open_input(&ic, is->filename, is->iformat, &format_opts);
-
-	//if(avformat_open_input(&pFormatCtx,"sprink_12M.ts",NULL,NULL)!=0){
-	//AfxMessageBox()是全局的函数，记住在VC里有AFX开关的都是全局函数。
-	//而MessageBox()是CWnd的成员函数，也就是说在哪都可以调用AfxMessageBox（），
-	//但是MessageBox()只能在基类是CWnd的类里面直接调用。 
-	//printf("输入格式:%s\n",ic->iformat->name);
-	//printf("IO缓存大小:%d\n",ic->pb.buffer_size);
 	if (err < 0) {
 		print_error(is->filename, err);
 		ret = -1;
@@ -2906,23 +2470,12 @@ static int read_thread(void *arg)
 		st_index[AVMEDIA_TYPE_VIDEO] =
 		av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO,
 		wanted_stream[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
-	//int video_index = st_index[AVMEDIA_TYPE_VIDEO];
-	//printf("视频编码器名称：%s\n",ic->streams[video_index]->codec->codec_name);
-	//printf("视频宽：%d\n",ic->streams[video_index]->codec->width);
-	//printf("视频高：%d\n",ic->streams[video_index]->codec->height);
-	//zhenlv=(ic->streams[video_index]->codec->time_base.den)/(ic->streams[video_index]->codec->time_base.num);
-	//printf("视频帧率：%f\n",zhenlv);
 	if (!audio_disable)
 		st_index[AVMEDIA_TYPE_AUDIO] =
 		av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO,
 		wanted_stream[AVMEDIA_TYPE_AUDIO],
 		st_index[AVMEDIA_TYPE_VIDEO],
 		NULL, 0);
-	//int audio_index = st_index[AVMEDIA_TYPE_AUDIO];
-	//printf("音频编码器名称：%s\n",ic->streams[audio_index]->codec->codec_name);
-	//printf("采样率：%d\n",ic->streams[audio_index]->codec->sample_rate);
-	//printf("帧大小：%d\n",ic->streams[audio_index]->codec->frame_size);
-	//printf("声道数：%d\n",ic->streams[audio_index]->codec->channels);
 	if (!video_disable)
 		st_index[AVMEDIA_TYPE_SUBTITLE] =
 		av_find_best_stream(ic, AVMEDIA_TYPE_SUBTITLE,
@@ -2936,12 +2489,8 @@ static int read_thread(void *arg)
 	}
 
 	is->show_mode = (VideoState::ShowMode)show_mode;
-
-	/* open the streams */
-	//打开Stream，视频或音频
 	if (st_index[AVMEDIA_TYPE_AUDIO] >= 0) {
-		//打开
-		stream_component_open(is, st_index[AVMEDIA_TYPE_AUDIO]);
+		stream_component_open(is, st_index[AVMEDIA_TYPE_AUDIO]);//打开
 	}
 
 	ret = -1;
@@ -2965,12 +2514,9 @@ static int read_thread(void *arg)
 
 	if (infinite_buffer < 0 && is_realtime(ic))
 		infinite_buffer = 1;
-	//获取一些系统信息
-
 	//注意：在此处设置MFC参数
 	ffmfc_param_global(is);
 	
-
 	for (;;) {
 		if (is->abort_request)
 			break;
@@ -2996,8 +2542,6 @@ static int read_thread(void *arg)
 			int64_t seek_target = is->seek_pos;
 			int64_t seek_min    = is->seek_rel > 0 ? seek_target - is->seek_rel + 2: INT64_MIN;
 			int64_t seek_max    = is->seek_rel < 0 ? seek_target - is->seek_rel - 2: INT64_MAX;
-			// FIXME the +-2 is due to rounding being not done in the correct direction in generation
-			//      of the seek_pos/seek_rel variables
 
 			ret = avformat_seek_file(is->ic, -1, seek_min, seek_target, seek_max, is->seek_flags);
 			if (ret < 0) {
@@ -3067,17 +2611,8 @@ static int read_thread(void *arg)
 			eof=0;
 			continue;
 		}
-
-		//读取一个Packet
 		ret = av_read_frame(ic, pkt);
-		//printf("Packet dts：%d\n",pkt->dts);
-		//printf("Packet pts：%d\n",pkt->pts);
-		//printf("Packet Size：%d\n",pkt->size);
-		//printf("Packet dts：%d\n",pkt->dts);
-		//此处设置图表参数
-
 		ffmfc_param_packet(is,pkt);
-		//--------------------
 		if (ret < 0) {
 			if (ret == AVERROR_EOF || url_feof(ic->pb))
 				eof = 1;
@@ -3097,7 +2632,6 @@ static int read_thread(void *arg)
 		if (pkt->stream_index == is->audio_stream && pkt_in_play_range) {
 			packet_queue_put(&is->audioq, pkt);
 			//printf("音频Packet，加入音频队列\n");
-			//---------------------------------
 		} else if (pkt->stream_index == is->video_stream && pkt_in_play_range) {
 			packet_queue_put(&is->videoq, pkt);
 			//printf("视频Packet，加入视频队列\n");
@@ -3228,9 +2762,6 @@ the_end:
 	if (codec_type == AVMEDIA_TYPE_VIDEO)
 		is->que_attachments_req = 1;
 }
-//静态函数只能在声明它的文件当中可见，不能被其他文件所调用，也就是说该静态函数只
-//能在其定义的.cpp或.c中调用，在其它.cpp或.c文件的函数里是不能被调用的。
-//想要在MFC中调用，就必须用一个普通函数对他进行封装
 
 static void toggle_full_screen(VideoState *is)
 {
@@ -3276,7 +2807,6 @@ static void step_to_next_frame(VideoState *is)
 	is->step = 1;
 }
 //发送“逐帧”命令
-//Send Command "Step"
 void ffmfc_seek_step(){
 	SDL_Event event;
 	event.type = SDL_KEYDOWN;
@@ -3284,7 +2814,6 @@ void ffmfc_seek_step(){
 	SDL_PushEvent(&event);
 }
 //发送“宽高比”命令
-//Send Command "AspectRatio"
 void ffmfc_aspectratio(int num,int den){
 	int w=g_is->width;
 	int h=g_is->height;
@@ -3296,7 +2825,6 @@ void ffmfc_aspectratio(int num,int den){
 	SDL_PushEvent(&event);
 }
 //发送“大小”命令
-//Send Command "WindowSize"
 void ffmfc_size(int percentage){
 	int w=g_is->ic->streams[g_is->video_stream]->codec->width;
 	int h=g_is->ic->streams[g_is->video_stream]->codec->height;
@@ -3307,7 +2835,6 @@ void ffmfc_size(int percentage){
 	SDL_PushEvent(&event);
 }
 //发送“窗口画面内容”命令
-//Send Command "Audio Display Mode"
 void ffmfc_audio_display(int mode){
 
 	SDL_Event event;
@@ -3320,7 +2847,6 @@ void ffmfc_audio_display(int mode){
 	SDL_PushEvent(&event);
 }
 //发送“前进/后退”命令
-//Send Command "Seek"
 void ffmfc_seek(int time){
 	SDL_Event event;
 	event.type = SDL_KEYDOWN;
@@ -3336,15 +2862,12 @@ void ffmfc_seek(int time){
 	SDL_PushEvent(&event);
 }
 //播放进度
-//Seek Bar
 void ffmfc_seek_bar(int pos){
 	SDL_Event event;
 	event.type = FFMFC_SEEK_BAR_EVENT;
 	seek_bar_pos=pos;
 	SDL_PushEvent(&event);
 }
-
-
 
 static void toggle_audio_display(VideoState *is,int mode)
 {
@@ -3371,8 +2894,6 @@ void ffmfc_stretch(int stretch){
 	is_stretch=stretch;
 }
 
-
-/* handle an event sent by the GUI */
 //处理各种鼠标键盘命令,包括各种事件
 static void event_loop(VideoState *cur_stream)
 {
@@ -3380,12 +2901,9 @@ static void event_loop(VideoState *cur_stream)
 	double incr, pos, frac;
 
 	for (;;) {
-
 		double x;
-		//判断退出-------
-		if(exit_remark==1)
+		if(m_exit)//判断退出
 			break;
-		//---------------
 		if (cur_stream->abort_request)
 			break;
 
@@ -3404,8 +2922,7 @@ static void event_loop(VideoState *cur_stream)
 				dlg->OnBnClickedStop();
 				break;
 			case SDLK_f:
-				//全屏
-				toggle_full_screen(cur_stream);
+				toggle_full_screen(cur_stream);//全屏
 				cur_stream->force_refresh = 1;
 				break;
 			case SDLK_p:
@@ -3568,9 +3085,8 @@ do_seek:
 			int bgcolor = SDL_MapRGB(screen->format, 0x00, 0x00, 0x00);
 			fill_rectangle(screen,cur_stream->xleft, cur_stream->ytop, cur_stream->width, cur_stream->height,bgcolor);
 			SDL_UpdateRect(screen, cur_stream->xleft, cur_stream->ytop, cur_stream->width, cur_stream->height);
-			//--
 			break;
-							  }
+			}
 		default:
 			break;
 		}
@@ -3649,14 +3165,7 @@ return 0;
 
 static void opt_input_file(void *optctx, const char *filename)
 {
-	//if (input_filename) {
-	//    fprintf(stderr, "Argument '%s' provided as input filename, but '%s' was already specified.\n",
-	//            filename, input_filename);
-	//    exit(1);
-	//}
-	//if (!strcmp(filename, "-"))
-	//    filename = "pipe:";
-	//input_filename = filename;
+
 }
 
 static int opt_codec(void *o, const char *opt, const char *arg)
@@ -3774,28 +3283,16 @@ static int lockmgr(void **mtx, enum AVLockOp op)
 	return 1;
 }
 
-/* Called from the main */
 //解码主函数
-//Main function
 #define __MINGW32__
 int ffmfc_play(LPVOID lpParam)
 {
 	dlg=(CffplaymfcDlg *)lpParam;
-
 	ffmfc_reset_index();
-	//退出符号置零
-	exit_remark=0;
+	m_exit=false;
 	int flags;
-	//核心结构体
-	VideoState *is;
-
+	VideoState *is; //核心结构
 	char dummy_videodriver[] = "SDL_VIDEODRIVER=dummy";
-
-
-	//   av_log_set_flags(AV_LOG_SKIP_REPEATED);
-	//    parse_loglevel(argc, argv, options);
-
-	/* register all codecs, demux and protocols */
 	avcodec_register_all();
 #if CONFIG_AVDEVICE
 	avdevice_register_all();
@@ -3804,46 +3301,21 @@ int ffmfc_play(LPVOID lpParam)
 	avfilter_register_all();
 #endif
 	av_register_all();
-	//如果没有本句会出错误：
-	//Warning:Using network protocols without global network initialization.
-	//测试网络数据的时候直接使用rtsp://169.254.197.35:8554/sh1943.mpg格式的参数就行
-	//或是使用 rtmp://localhost/vod/sample.flv都可以
-	//因为此版本ffmpeg集成了librtmp
-	//和文件很类似
 	avformat_network_init();
-
-	//it_opts();
-
 	signal(SIGINT , sigterm_handler); /* Interrupt (ANSI).    */
 	signal(SIGTERM, sigterm_handler); /* Termination (ANSI).  */
-	//input_filename = "rtmp://live.hkstv.hk.lxdns.com/live/hks live=1";
-	//传入文件路径
 	input_filename=(const char *)malloc(MAX_URL_LENGTH);
 
 	GetWindowTextA(dlg->m_inputurl,(LPSTR)input_filename,MAX_URL_LENGTH);
-	//show_banner(argc, argv, options);
-	//获取播放的首选项
-	int opt_argc=0;
+	
+	int opt_argc=0; //获取播放的首选项
 	char **opt_argv=NULL;
 
 	parse_options(NULL, opt_argc, opt_argv, options, opt_input_file);
-	/*
-	if (!input_filename) 
-	{
-	show_usage();
-	fprintf(stderr, "An input file must be specified\n");
-	fprintf(stderr, "Use -h to get full help or, even better, run 'man %s'\n", program_name);
-	exit(1);
-	}
-	*/
 	if (display_disable) 
 	{
 		video_disable = 1;
 	}
-	//设置为自动退出-------------------
-	//解码图片的时候，会自动退出，所以先不设置了~
-	//autoexit=1;
-	//---------------------------------
 	flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER;
 	if (audio_disable)
 		flags &= ~SDL_INIT_AUDIO;
@@ -3860,8 +3332,6 @@ int ffmfc_play(LPVOID lpParam)
 #if !defined(__MINGW32__) && !defined(__APPLE__)
 	flags |= SDL_INIT_EVENTTHREAD; /* Not supported on Windows or Mac OS X */
 #endif
-	//------SDL------------------------
-	//初始化
 	if (SDL_Init (flags)) {
 		AfxMessageBox(_T("Could not initialize SDL "));
 		exit(1);
@@ -3885,8 +3355,7 @@ int ffmfc_play(LPVOID lpParam)
 	}
 
 	av_init_packet(&flush_pkt);
-	flush_pkt.data = (uint8_t *)(intptr_t)"FLUSH";
-	//解码主函数
+	flush_pkt.data = (uint8_t*)(intptr_t)"FLUSH";
 	is = stream_open(input_filename, file_iformat);
 	if (!is) {
 		AfxMessageBox(_T("Failed to initialize VideoState!"));
@@ -3894,15 +3363,7 @@ int ffmfc_play(LPVOID lpParam)
 	}
 
 	g_is = is;
-
 	autoexit=1;
-	//const char *info=(char *)malloc(500);
-	//info=avformat_configuration();
-
-	//--------------------
 	event_loop(is);
-
-	/* never returns */
-
 	return 0;
 }

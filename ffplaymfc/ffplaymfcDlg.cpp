@@ -116,13 +116,10 @@ UINT Thread_Play(LPVOID lpParam){
 }
 
 // CffplaymfcDlg 消息处理程序
-
 BOOL CffplaymfcDlg::OnInitDialog()
 {
 	CDialogEx::OnInitDialog();
-
 	// 将“关于...”菜单项添加到系统菜单中。
-
 	// IDM_ABOUTBOX 必须在系统命令范围内。
 	ASSERT((IDM_ABOUTBOX & 0xFFF0) == IDM_ABOUTBOX);
 	ASSERT(IDM_ABOUTBOX < 0xF000);
@@ -140,7 +137,6 @@ BOOL CffplaymfcDlg::OnInitDialog()
 			pSysMenu->AppendMenu(MF_STRING, IDM_ABOUTBOX, strAboutMenu);
 		}
 	}
-
 	//_CrtSetBreakAlloc(4985);
 	// 设置此对话框的图标。当应用程序主窗口不是对话框时，框架将自动
 	//  执行此操作
@@ -149,23 +145,16 @@ BOOL CffplaymfcDlg::OnInitDialog()
 
 	// TODO: 在此添加额外的初始化代码
 	CreateSubWindow();
-	//
 	//SliderControl
 	m_playprogress.SetRange(0,1000);
 	m_playprogress.SetTicFreq(50);
-
 	ResetBtn();
-
 	TCHAR* argvPath = __targv[1];
-
-
 	if(argvPath != NULL){ 
 		//设置路径
 		m_inputurl.SetWindowText(argvPath);
 		OnBnClickedStart();
 	}
-
-
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
 
@@ -243,7 +232,7 @@ void CffplaymfcDlg::ActiveBtn(){
 void CffplaymfcDlg::OnBnClickedStart()
 {
 	char url[MAX_URL_LENGTH]={0};
-	m_inputurl.GetWindowText((LPTSTR)url,1000);
+	m_inputurl.GetWindowText((LPTSTR)url,1000); // 获取输入框内信息
 	if(strcmp(url,"")==0){
 		CString resloader;
 		resloader.LoadString(IDS_MSGBOX_NOURL);
