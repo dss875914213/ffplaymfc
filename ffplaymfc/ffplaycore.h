@@ -99,7 +99,6 @@ typedef struct URLProtocol {
 	int flags;
 	int (*url_check)(URLContext* h, int mask);
 } URLProtocol;
-//---------------------
 
 typedef struct PacketQueue {
 	AVPacketList* first_pkt, * last_pkt;
@@ -146,7 +145,8 @@ enum {
 	AV_SYNC_EXTERNAL_CLOCK, /* synchronize to an external clock */
 };
 //视频显示方式
-enum V_Show_Mode {
+enum V_Show_Mode 
+{
 	SHOW_MODE_YUV = 0, SHOW_MODE_Y, SHOW_MODE_U, SHOW_MODE_V
 };
 
@@ -176,11 +176,10 @@ enum V_Show_Mode {
 	((uint32_t *)(d))[0] = (a << 24) | (y << 16) | (u << 8) | v;\
 }
 
-
 #define BPP 1
 
 typedef struct VideoState {
-	SDL_Thread* read_tid;
+	SDL_Thread* read_tid; // 解码线程
 	SDL_Thread* video_tid;
 	SDL_Thread* refresh_tid;
 	AVInputFormat* iformat;
@@ -196,7 +195,7 @@ typedef struct VideoState {
 	int64_t seek_rel;
 	int read_pause_return;
 	AVFormatContext* ic;
-	int audio_stream;
+	
 	int av_sync_type;
 	double external_clock; /* external clock base */
 	int64_t external_clock_time;
@@ -206,7 +205,6 @@ typedef struct VideoState {
 	double audio_diff_threshold;
 	int audio_diff_avg_count;
 	AVStream* audio_st;
-	PacketQueue audioq;
 	int audio_hw_buf_size;
 	DECLARE_ALIGNED(16, uint8_t, audio_buf2)[AVCODEC_MAX_AUDIO_FRAME_SIZE * 4];
 	uint8_t silence_buf[SDL_AUDIO_BUFFER_SIZE];
@@ -236,17 +234,13 @@ typedef struct VideoState {
 	int rdft_bits;
 	FFTSample* rdft_data;
 	int xpos;
-
 	SDL_Thread* subtitle_tid;
-	int subtitle_stream;
 	int subtitle_stream_changed;
 	AVStream* subtitle_st;
-	PacketQueue subtitleq;
 	SubPicture subpq[SUBPICTURE_QUEUE_SIZE];
 	int subpq_size, subpq_rindex, subpq_windex;
 	SDL_mutex* subpq_mutex;
 	SDL_cond* subpq_cond;
-
 	double frame_timer;
 	double frame_last_pts;
 	double frame_last_duration;
@@ -255,9 +249,9 @@ typedef struct VideoState {
 	double frame_last_filter_delay;
 	int64_t frame_last_dropped_pos;
 	double video_clock;                          ///< pts of last decoded frame / predicted pts of next decoded frame
-	int video_stream;
+	
 	AVStream* video_st;
-	PacketQueue videoq;
+	
 	double video_current_pts;                    ///< current displayed pts (different from video_clock if frame fifos are used)
 	double video_current_pts_drift;              ///< video_current_pts - time (av_gettime) at which we updated video_current_pts - used to have running video pts
 	int64_t video_current_pos;                   ///< current displayed file pos
@@ -265,54 +259,44 @@ typedef struct VideoState {
 	int pictq_size, pictq_rindex, pictq_windex;
 	SDL_mutex* pictq_mutex;
 	SDL_cond* pictq_cond;
-#if !CONFIG_AVFILTER
 	struct SwsContext* img_convert_ctx;
-#endif
-
-	char filename[1024];
+	
 	int width, height, xleft, ytop;
 	int step;
-
-#if CONFIG_AVFILTER
-	AVFilterContext* in_video_filter;           ///< the first filter in the video chain
-	AVFilterContext* out_video_filter;          ///< the last filter in the video chain
-	int use_dr1;
-	FrameBuffer* buffer_pool;
-#endif
-
 	int refresh;
-	int last_video_stream, last_audio_stream, last_subtitle_stream;
-
 	SDL_cond* continue_read_thread;
-	//视频显示方式------------
-	enum V_Show_Mode v_show_mode;
+	enum V_Show_Mode v_show_mode;//视频显示方式
+
+	// 已经了解的变量
+	char filename[1024]; // 文件名
+	PacketQueue videoq, audioq, subtitleq;	// 视频队列 音频队列 字幕队列
+	int last_video_stream, last_audio_stream, last_subtitle_stream;
+	int video_stream, audio_stream, subtitle_stream;
+
 } VideoState;
 
 static bool m_exit = false;//专门设置的标记，在程序将要退出的时候会置1
 static int is_full_screen;
 static int64_t audio_callback_time;
-static AVPacket flush_pkt;
+static AVPacket m_flushPkt;
 static SDL_Surface* screen;
-
 static AVInputFormat* file_iformat;
-static const char* input_filename;
+static const char* m_inputFileName;
 static const char* window_title;
-static int fs_screen_width;
-static int fs_screen_height;
+static int m_screenWidth;
+static int m_screenHeight;
 static int screen_width = 0;
 static int screen_height = 0;
 static int audio_disable;
 static int video_disable;
 static int wanted_stream[AVMEDIA_TYPE_NB] = { -1,-1,0,-1,0 };
 static int seek_by_bytes = -1;
-static int display_disable;
 static int show_status = 1;
 static int av_sync_type = AV_SYNC_AUDIO_MASTER;
 static int64_t start_time = AV_NOPTS_VALUE;
 static int64_t duration = AV_NOPTS_VALUE;
 static int workaround_bugs = 1;
 static int fast = 0;
-static int genpts = 0;
 static int lowres = 0;
 static int idct = FF_IDCT_AUTO;
 static enum AVDiscard skip_frame = AVDISCARD_DEFAULT;
@@ -320,7 +304,7 @@ static enum AVDiscard skip_idct = AVDISCARD_DEFAULT;
 static enum AVDiscard skip_loop_filter = AVDISCARD_DEFAULT;
 static int error_concealment = 3;
 static int decoder_reorder_pts = -1;
-static int autoexit;
+static int m_autoExit;
 static int exit_on_keydown;
 static int exit_on_mousedown;
 static int loop = 1;
@@ -338,13 +322,10 @@ static int dummy;
 #define FF_QUIT_EVENT    (SDL_USEREVENT + 2)
 #define FFMFC_SEEK_BAR_EVENT    (SDL_USEREVENT + 4)//自定义一个事件，用于调整播放进度
 #define FFMFC_STRETCH_EVENT (SDL_USEREVENT + 5) //是否拉伸-------------------------
-
-
 #define MAX_FRAME_NUM 10000 //最多存储的帧信息
 #define MAX_PACKET_NUM 10000//最多存储的Packet信息
 #define MAX_URL_LENGTH 500//URL长度
 
-int ffmfc_reset_index();
 int ffmfc_param_global(VideoState* is);
 int ffmfc_param_packet(VideoState* is, AVPacket* packet);
 int ffmfc_param_vframe(VideoState* is, AVFrame* pFrame, AVPacket* packet);
@@ -403,10 +384,8 @@ static void stream_cycle_channel(VideoState* is, int codec_type);
 static void toggle_full_screen(VideoState* is);
 void ffmfc_play_fullcreen();
 static void toggle_pause(VideoState* is);
-;
 static void step_to_next_frame(VideoState* is);
 static void toggle_audio_display(VideoState* is, int mode);
-;
 static void event_loop(VideoState* cur_stream);
 static int opt_frame_size(void* optctx, const char* opt, const char* arg);
 static int opt_width(void* optctx, const char* opt, const char* arg);
@@ -423,7 +402,6 @@ static void show_usage(void);
 void show_help_default(const char* opt, const char* arg);
 static int lockmgr(void** mtx, enum AVLockOp op);
 
-
 void ffmfc_play_pause(); //发送“暂停”命令
 void ffmfc_seek_step();//发送“逐帧”命令
 void ffmfc_play_fullcreen();//发送“全屏”命令
@@ -433,7 +411,6 @@ void ffmfc_size(int percentage);//发送“大小”命令
 void ffmfc_audio_display(int mode);//发送“窗口画面内容”命令
 void ffmfc_quit();//发送“退出”命令
 int  ffmfc_play(LPVOID lpParam);//解码主函数
-int  ffmfc_reset_index();//复位
 void ffmfc_seek_bar(int pos);//播放进度
 void ffmfc_stretch(int stretch);//Stretch
 

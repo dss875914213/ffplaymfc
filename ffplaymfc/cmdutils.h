@@ -18,11 +18,6 @@
 extern const char program_name[];
 
 /**
- * program birth year, defined by the program for show_banner()
- */
-extern const int program_birth_year;
-
-/**
  * this year, defined by the program for show_banner()
  */
 extern const int this_year;
@@ -178,19 +173,6 @@ void show_help_default(const char *opt, const char *arg);
  * Generic -h handler common to all avtools.
  */
 int show_help(void *optctx, const char *opt, const char *arg);
-
-/**
- * Parse the command line arguments.
- *
- * @param optctx an opaque options context
- * @param options Array with the definitions required to interpret every
- * option of the form: -option_name [argument]
- * @param parse_arg_function Name of the function called to process every
- * argument without a leading option name flag. NULL if such arguments do
- * not have to be processed.
- */
-void parse_options(void *optctx, int argc, char **argv, const OptionDef *options,
-                   void (* parse_arg_function)(void *optctx, const char*));
 
 /**
  * Parse one given option.
