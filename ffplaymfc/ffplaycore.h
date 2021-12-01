@@ -179,9 +179,7 @@ enum V_Show_Mode
 #define BPP 1
 
 typedef struct VideoState {
-	SDL_Thread* read_tid; // 解码线程
-	SDL_Thread* video_tid;
-	SDL_Thread* refresh_tid;
+	
 	AVInputFormat* iformat;
 	int no_background;
 	int abort_request;
@@ -234,7 +232,6 @@ typedef struct VideoState {
 	int rdft_bits;
 	FFTSample* rdft_data;
 	int xpos;
-	SDL_Thread* subtitle_tid;
 	int subtitle_stream_changed;
 	AVStream* subtitle_st;
 	SubPicture subpq[SUBPICTURE_QUEUE_SIZE];
@@ -272,7 +269,10 @@ typedef struct VideoState {
 	PacketQueue videoq, audioq, subtitleq;	// 视频队列 音频队列 字幕队列
 	int last_video_stream, last_audio_stream, last_subtitle_stream;
 	int video_stream, audio_stream, subtitle_stream;
-
+	SDL_Thread* read_tid; // 解码线程
+	SDL_Thread* refresh_tid;
+	SDL_Thread* video_tid,* subtitle_tid;// 视频线程，字幕线程
+	
 } VideoState;
 
 static bool m_exit = false;//专门设置的标记，在程序将要退出的时候会置1
